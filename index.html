@@ -422,12 +422,48 @@ function addCoin(laneX, z, y = 0.9) {
 //   rowIndex      : row counter, used for a gentle warm-up at the start of a run
 let safeLane = 1, prevSafeKind = 'open', rowIndex = 0;
 
+// Coin arcs: a string of coins shaped like the player's jump trajectory, starting
+// and ending on the ground. Because the coins lie on the exact jump parabola for
+// the current speed, one well-timed jump sweeps through every coin. While an arc is
+// active we keep its lane clear (arcRowsLeft rows) so the jump is always safe.
+let arcLane = 1, arcRowsLeft = 0;
+const JUMP_AIR_TIME = -2 * JUMP_V / GRAVITY; // launch -> landing, seconds
+
+function spawnCoinArc(startZ, items) {
+  const lane = safeLane;                       // arc rides the player's safe corridor
+  const s = Math.max(START_SPEED, speed);      // run speed sets the arc's horizontal width
+  const span = s * JUMP_AIR_TIME;              // ground distance covered by the jump
+  const count = Math.min(9, Math.max(5, Math.round(span / 2.4)));
+  for (let i = 0; i < count; i++) {
+    const t = (i / (count - 1)) * JUMP_AIR_TIME;
+    const y = STAND_Y + JUMP_V * t + 0.5 * GRAVITY * t * t; // ends meet the ground
+    items.push(addCoin(LANE_X[lane], startZ - s * t, y));
+  }
+  arcLane = lane;
+  arcRowsLeft = Math.ceil(span / ROW_GAP);     // keep this lane open across the whole arc
+  return startZ - span;                        // far end, used for despawn bookkeeping
+}
+
 function spawnRow(z) {
   const items = [];
   const diff = (speed - START_SPEED) / (MAX_SPEED - START_SPEED); // 0..1
   rowIndex++;
   const warmup = rowIndex <= 4;
   const kinds = ['low', 'high', 'train'];
+
+  // inside an active coin arc: keep the arc lane open so the jump is safe, but
+  // still challenge the other two lanes.
+  if (arcRowsLeft > 0) {
+    arcRowsLeft--;
+    for (const l of [0, 1, 2]) {
+      if (l !== arcLane && !warmup && Math.random() < 0.3 + diff * 0.25)
+        items.push(addObstacle(kinds[(Math.random() * 3) | 0], LANE_X[l], z));
+    }
+    safeLane = arcLane;
+    prevSafeKind = 'open';
+    rows.push({ z, items });
+    return;
+  }
 
   // occasional pure-coin breather row — all lanes open, so it doubles as a
   // recovery row: any in-progress slide/jump is guaranteed finished afterwards.
@@ -436,6 +472,14 @@ function spawnRow(z) {
     items.push(addCoin(LANE_X[lane], z, Math.random() < 0.4 ? 1.9 : 0.9));
     prevSafeKind = 'open';
     rows.push({ z, items });
+    return;
+  }
+
+  // occasionally launch a jump-shaped coin arc down the safe lane. Requires the
+  // previous safe lane to be open so the player is grounded and free to jump.
+  if (!warmup && prevSafeKind === 'open' && Math.random() < 0.14) {
+    const farZ = spawnCoinArc(z, items);
+    rows.push({ z: farZ, items }); // despawn after the far (last) coin is well behind
     return;
   }
 
@@ -528,6 +572,7 @@ function resetGame() {
   sliding = false; slideTimer = 0;
   distance = 0; coins = 0; score = 0; runTime = 0;
   safeLane = 1; prevSafeKind = 'open'; rowIndex = 0; // restart the safe corridor at player's lane
+  arcLane = 1; arcRowsLeft = 0;
   if (playerCol && sliding) setSlideCollider(false);
   playerBody.setNextKinematicTranslation({ x: 0, y: STAND_Y, z: 0 });
   world.step();
