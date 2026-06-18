@@ -1,0 +1,709 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>Dash Runner — Three.js + Rapier</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #0b0f1a; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  #app { position: fixed; inset: 0; }
+  canvas { display: block; }
+
+  /* HUD */
+  #hud {
+    position: fixed; top: 0; left: 0; right: 0;
+    display: flex; justify-content: space-between; align-items: flex-start;
+    padding: 18px 22px; pointer-events: none; color: #fff;
+    text-shadow: 0 2px 8px rgba(0,0,0,.5); z-index: 10;
+  }
+  #hud .stat { font-weight: 800; letter-spacing: .5px; }
+  #hud .label { font-size: 11px; opacity: .7; text-transform: uppercase; letter-spacing: 2px; }
+  #hud .value { font-size: 30px; line-height: 1; }
+  #coins .value { color: #ffd34d; }
+  #speed .value { font-size: 20px; opacity: .85; }
+  #hud .right { text-align: right; }
+
+  /* Overlays */
+  .overlay {
+    position: fixed; inset: 0; z-index: 20;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    text-align: center; color: #fff; padding: 24px;
+    background: radial-gradient(circle at 50% 35%, rgba(34,49,92,.55), rgba(7,10,20,.92));
+    backdrop-filter: blur(4px);
+  }
+  .overlay.hidden { display: none; }
+  .title { font-size: clamp(40px, 9vw, 86px); font-weight: 900; letter-spacing: -1px;
+    background: linear-gradient(90deg, #6ad3ff, #ffd34d, #ff7ad9);
+    -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+    margin-bottom: 8px; }
+  .subtitle { font-size: 16px; opacity: .8; max-width: 520px; line-height: 1.6; margin-bottom: 28px; }
+  .btn {
+    pointer-events: auto; cursor: pointer; border: none;
+    font-size: 20px; font-weight: 800; letter-spacing: 1px; color: #0b0f1a;
+    padding: 16px 42px; border-radius: 999px;
+    background: linear-gradient(90deg, #6ad3ff, #8affc1);
+    box-shadow: 0 10px 30px rgba(106,211,255,.4); transition: transform .12s ease;
+  }
+  .btn:active { transform: scale(.95); }
+  .keys { margin-top: 30px; display: flex; gap: 18px; flex-wrap: wrap; justify-content: center; opacity: .85; }
+  .keycap { display: flex; flex-direction: column; align-items: center; gap: 6px; font-size: 12px; opacity: .85; }
+  .keycap b { display: inline-flex; min-width: 38px; height: 38px; padding: 0 10px; align-items: center; justify-content: center;
+    border: 1px solid rgba(255,255,255,.35); border-radius: 8px; font-size: 14px; background: rgba(255,255,255,.06); }
+  .final { font-size: 22px; margin-bottom: 6px; }
+  .final b { color: #ffd34d; }
+  .best { opacity: .7; margin-bottom: 26px; }
+  #flash { position: fixed; inset: 0; background: #fff; opacity: 0; pointer-events: none; z-index: 15; transition: opacity .08s; }
+</style>
+</head>
+<body>
+  <div id="app"></div>
+  <div id="flash"></div>
+
+  <div id="hud">
+    <div id="score" class="stat"><div class="label">Score</div><div class="value">0</div></div>
+    <div class="right">
+      <div id="coins" class="stat"><div class="label">Coins</div><div class="value">0</div></div>
+      <div id="speed" class="stat" style="margin-top:10px"><div class="label">Speed</div><div class="value">0</div></div>
+    </div>
+  </div>
+
+  <div id="startScreen" class="overlay">
+    <div class="title">DASH RUNNER</div>
+    <div class="subtitle">Endless 3D runner powered by Three.js rendering and Rapier physics.
+      Dodge the trains, leap the barriers, slide under the gates, and grab every coin.</div>
+    <button class="btn" id="startBtn">PLAY</button>
+    <div class="keys">
+      <div class="keycap"><b>← →</b><span>Switch lane</span></div>
+      <div class="keycap"><b>↑</b><span>Jump</span></div>
+      <div class="keycap"><b>↓</b><span>Slide</span></div>
+      <div class="keycap"><b>swipe</b><span>on mobile</span></div>
+    </div>
+  </div>
+
+  <div id="overScreen" class="overlay hidden">
+    <div class="title" style="font-size:clamp(34px,7vw,64px)">GAME OVER</div>
+    <div class="final">Score <b id="finalScore">0</b></div>
+    <div class="best" id="bestScore">Best 0</div>
+    <button class="btn" id="retryBtn">RUN AGAIN</button>
+  </div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://esm.sh/three@0.160.0",
+    "three/addons/": "https://esm.sh/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import RAPIER from 'https://esm.sh/@dimforge/rapier3d-compat@0.12.0';
+
+await RAPIER.init();
+
+// ----------------------------------------------------------------------------
+// Constants
+// ----------------------------------------------------------------------------
+const LANE_X = [-2.4, 0, 2.4];           // three lanes
+const ROW_GAP = 9;                       // distance between spawned rows
+const SPAWN_AHEAD = 150;                 // how far ahead to keep generating
+const DESPAWN_BEHIND = 16;               // remove rows this far behind player
+
+const START_SPEED = 14;
+const MAX_SPEED = 36;
+const SPEED_RAMP = 0.22;                 // units/sec added per second
+
+const GRAVITY = -36;
+const JUMP_V = 12.8;
+const STAND_Y = 0.9;                     // capsule centre height when standing
+const SLIDE_Y = 0.38;
+const SLIDE_TIME = 0.55;
+const LANE_LERP = 13;                    // lane change snappiness
+
+const COIN_RADIUS = 1.15;
+
+// ----------------------------------------------------------------------------
+// Renderer / Scene / Camera
+// ----------------------------------------------------------------------------
+const app = document.getElementById('app');
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+app.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0e1430);
+scene.fog = new THREE.Fog(0x0e1430, 40, 115);
+
+const camera = new THREE.PerspectiveCamera(62, innerWidth / innerHeight, 0.1, 400);
+camera.position.set(0, 4.4, 9);
+
+// Lights
+const hemi = new THREE.HemisphereLight(0xbcd4ff, 0x202544, 0.85);
+scene.add(hemi);
+const sun = new THREE.DirectionalLight(0xfff1d0, 1.5);
+sun.position.set(-8, 18, 6);
+sun.castShadow = true;
+sun.shadow.mapSize.set(1024, 1024);
+sun.shadow.camera.near = 1; sun.shadow.camera.far = 60;
+sun.shadow.camera.left = -14; sun.shadow.camera.right = 14;
+sun.shadow.camera.top = 14; sun.shadow.camera.bottom = -14;
+scene.add(sun);
+scene.add(sun.target);
+
+// ----------------------------------------------------------------------------
+// Floor (scrolling texture for sense of speed) + side rails
+// ----------------------------------------------------------------------------
+function makeFloorTexture() {
+  const c = document.createElement('canvas');
+  c.width = 256; c.height = 256;
+  const x = c.getContext('2d');
+  x.fillStyle = '#1b2350'; x.fillRect(0, 0, 256, 256);
+  x.fillStyle = '#222c63';
+  x.fillRect(0, 0, 256, 128);
+  // lane divider dashes
+  x.strokeStyle = 'rgba(255,255,255,0.35)';
+  x.lineWidth = 6; x.setLineDash([34, 30]);
+  for (const px of [85.3, 170.6]) {
+    x.beginPath(); x.moveTo(px, 0); x.lineTo(px, 256); x.stroke();
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.repeat.set(1, 26);
+  t.anisotropy = 4;
+  return t;
+}
+const floorTex = makeFloorTexture();
+const floor = new THREE.Mesh(
+  new THREE.PlaneGeometry(7.4, 420),
+  new THREE.MeshStandardMaterial({ map: floorTex, roughness: 0.9, metalness: 0.0 })
+);
+floor.rotation.x = -Math.PI / 2;
+floor.receiveShadow = true;
+scene.add(floor);
+
+// glowing side rails
+const railGeo = new THREE.BoxGeometry(0.25, 0.5, 420);
+const railMat = new THREE.MeshStandardMaterial({ color: 0x6ad3ff, emissive: 0x2b6fb0, emissiveIntensity: 0.8, roughness: 0.4 });
+const railL = new THREE.Mesh(railGeo, railMat); railL.position.set(-3.85, 0.25, 0); scene.add(railL);
+const railR = new THREE.Mesh(railGeo, railMat); railR.position.set(3.85, 0.25, 0); scene.add(railR);
+
+// distant buildings (parallax rows, recycled)
+const buildMat = [0x2a2f5e, 0x343a73, 0x222748].map(c => new THREE.MeshStandardMaterial({ color: c, roughness: 1 }));
+const buildings = [];
+for (let i = 0; i < 24; i++) {
+  const h = 6 + Math.random() * 22;
+  const b = new THREE.Mesh(new THREE.BoxGeometry(3 + Math.random() * 3, h, 3 + Math.random() * 3),
+    buildMat[i % 3]);
+  const side = i % 2 === 0 ? -1 : 1;
+  b.position.set(side * (8 + Math.random() * 9), h / 2, -i * 18 - Math.random() * 8);
+  b.userData.side = side;
+  scene.add(b);
+  buildings.push(b);
+}
+
+// ----------------------------------------------------------------------------
+// Player (visual character) + contact shadow
+// ----------------------------------------------------------------------------
+const player = new THREE.Group();
+scene.add(player);
+
+const skin = new THREE.MeshStandardMaterial({ color: 0xffd9a8, roughness: 0.7 });
+const suit = new THREE.MeshStandardMaterial({ color: 0xff5a7a, roughness: 0.6 });
+const suit2 = new THREE.MeshStandardMaterial({ color: 0x37c8ff, roughness: 0.6 });
+
+const torso = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.7, 0.4), suit);
+torso.position.y = 0.55; torso.castShadow = true; player.add(torso);
+const head = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.42, 0.42), skin);
+head.position.y = 1.12; head.castShadow = true; player.add(head);
+const hair = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.14, 0.46), suit2);
+hair.position.y = 1.33; player.add(hair);
+
+function makeLimb(mat, w, h) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, w), mat);
+  m.castShadow = true; return m;
+}
+const armL = makeLimb(skin, 0.17, 0.55); armL.position.set(-0.42, 0.6, 0); player.add(armL);
+const armR = makeLimb(skin, 0.17, 0.55); armR.position.set(0.42, 0.6, 0); player.add(armR);
+const legL = makeLimb(suit2, 0.2, 0.55); legL.position.set(-0.16, 0.1, 0); player.add(legL);
+const legR = makeLimb(suit2, 0.2, 0.55); legR.position.set(0.16, 0.1, 0); player.add(legR);
+
+// soft blob shadow under feet (cheap grounding cue)
+const blob = new THREE.Mesh(
+  new THREE.CircleGeometry(0.55, 24),
+  new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.35 })
+);
+blob.rotation.x = -Math.PI / 2;
+scene.add(blob);
+
+// ----------------------------------------------------------------------------
+// Rapier world + player kinematic body & character controller
+// ----------------------------------------------------------------------------
+const world = new RAPIER.World({ x: 0, y: 0, z: 0 }); // vertical handled manually
+
+const playerBody = world.createRigidBody(
+  RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(0, STAND_Y, 0)
+);
+let playerCol = world.createCollider(RAPIER.ColliderDesc.capsule(0.55, 0.35), playerBody);
+
+const controller = world.createCharacterController(0.02);
+controller.setApplyImpulsesToDynamicBodies(false);
+
+const obstacleHandles = new Set();   // collider.handle -> is an obstacle
+
+function setSlideCollider(sliding) {
+  world.removeCollider(playerCol, false);
+  playerCol = sliding
+    ? world.createCollider(RAPIER.ColliderDesc.capsule(0.1, 0.3), playerBody)
+    : world.createCollider(RAPIER.ColliderDesc.capsule(0.55, 0.35), playerBody);
+}
+
+// ----------------------------------------------------------------------------
+// Shared geometry / materials for track objects
+// ----------------------------------------------------------------------------
+const GEO = {
+  low:   new THREE.BoxGeometry(2.0, 0.5, 0.6),
+  high:  new THREE.BoxGeometry(2.2, 1.4, 0.5),
+  train: new THREE.BoxGeometry(2.0, 2.4, 4.2),
+  coin:  new THREE.CylinderGeometry(0.36, 0.36, 0.1, 18),
+  post:  new THREE.BoxGeometry(0.12, 1.0, 0.12),
+};
+const MAT = {
+  low:   new THREE.MeshStandardMaterial({ color: 0xff7a3d, roughness: 0.5, emissive: 0x922b00, emissiveIntensity: 0.3 }),
+  high:  new THREE.MeshStandardMaterial({ color: 0xffd34d, roughness: 0.5, emissive: 0x7a5e00, emissiveIntensity: 0.3 }),
+  train: new THREE.MeshStandardMaterial({ color: 0x4f6bff, roughness: 0.4, metalness: 0.3, emissive: 0x101b6b, emissiveIntensity: 0.4 }),
+  coin:  new THREE.MeshStandardMaterial({ color: 0xffd34d, metalness: 0.9, roughness: 0.25, emissive: 0x6a5300, emissiveIntensity: 0.5 }),
+  post:  new THREE.MeshStandardMaterial({ color: 0xdddddd, roughness: 0.6 }),
+};
+
+// Object pools so we don't churn allocations
+const meshPool = { low: [], high: [], train: [], coin: [] };
+function getMesh(kind) {
+  let m = meshPool[kind].pop();
+  if (!m) {
+    if (kind === 'high') {
+      // gate: bar on two posts
+      m = new THREE.Group();
+      const bar = new THREE.Mesh(GEO.high, MAT.high); bar.position.y = 1.7; bar.castShadow = true;
+      const p1 = new THREE.Mesh(GEO.post, MAT.post); p1.position.set(-1.05, 1.2, 0);
+      const p2 = new THREE.Mesh(GEO.post, MAT.post); p2.position.set(1.05, 1.2, 0);
+      m.add(bar, p1, p2);
+    } else {
+      m = new THREE.Mesh(GEO[kind], MAT[kind]);
+      m.castShadow = true;
+      if (kind === 'low') m.position.y = 0.25;
+      if (kind === 'train') m.position.y = 1.2;
+    }
+  }
+  m.visible = true;
+  return m;
+}
+function freeMesh(kind, m) { m.visible = false; scene.remove(m); meshPool[kind].push(m); }
+
+// ----------------------------------------------------------------------------
+// Track generation (row based, endless)
+// ----------------------------------------------------------------------------
+let rows = [];          // active rows
+let nextSpawnZ = -30;   // world z of next row to create
+
+// obstacle vertical spans (for collider) — must match visuals/gameplay
+//  low   : y 0.0 .. 0.7   (jump over)
+//  high  : y 1.0 .. 2.4   (slide under)
+//  train : y 0.0 .. 2.4   (change lane)
+function addObstacle(kind, laneX, z) {
+  const mesh = getMesh(kind);
+  mesh.position.set(laneX, mesh.position.y || 0, z);
+  scene.add(mesh);
+
+  let hy, cy; // collider half-height (capsule) and centre
+  if (kind === 'low')   { hy = 0.25; cy = 0.25; }
+  if (kind === 'high')  { hy = 0.70; cy = 1.70; }
+  if (kind === 'train') { hy = 1.20; cy = 1.20; }
+
+  const desc = kind === 'train'
+    ? RAPIER.ColliderDesc.cuboid(0.95, 1.2, 2.1)
+    : RAPIER.ColliderDesc.cuboid(1.0, hy, 0.28);
+  const body = world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(laneX, cy, z));
+  const col = world.createCollider(desc, body);
+  obstacleHandles.add(col.handle);
+
+  return { type: 'obstacle', kind, mesh, body, col, laneX, z };
+}
+function addCoin(laneX, z, y = 0.9) {
+  const mesh = getMesh('coin');
+  mesh.rotation.x = Math.PI / 2;
+  mesh.position.set(laneX, y, z);
+  scene.add(mesh);
+  return { type: 'coin', kind: 'coin', mesh, laneX, z, y, collected: false };
+}
+
+// Solvability guarantee: we carry a "safe corridor" forward. Every row designates
+// one safe lane that (a) is reachable from the previous safe lane with a single
+// sideways move, and (b) is always clearable from the ground — open, or a jump/slide
+// the player has time to perform. The other two lanes are filled freely. This makes
+// at least one full run-through path always exist, so no impossible combo can spawn.
+//   safeLane      : lane index of the guaranteed path at the previous row
+//   prevSafeKind  : what the previous safe lane required ('open' | 'low' | 'high')
+//   rowIndex      : row counter, used for a gentle warm-up at the start of a run
+let safeLane = 1, prevSafeKind = 'open', rowIndex = 0;
+
+function spawnRow(z) {
+  const items = [];
+  const diff = (speed - START_SPEED) / (MAX_SPEED - START_SPEED); // 0..1
+  rowIndex++;
+  const warmup = rowIndex <= 4;
+  const kinds = ['low', 'high', 'train'];
+
+  // occasional pure-coin breather row — all lanes open, so it doubles as a
+  // recovery row: any in-progress slide/jump is guaranteed finished afterwards.
+  if (!warmup && Math.random() < 0.12) {
+    const lane = Math.floor(Math.random() * 3);
+    items.push(addCoin(LANE_X[lane], z, Math.random() < 0.4 ? 1.9 : 0.9));
+    prevSafeKind = 'open';
+    rows.push({ z, items });
+    return;
+  }
+
+  // 1) pick this row's safe lane — reachable from the previous one (±1 lane)
+  const reach = [safeLane];
+  if (safeLane > 0) reach.push(safeLane - 1);
+  if (safeLane < 2) reach.push(safeLane + 1);
+  const nextSafe = Math.random() < 0.6 ? safeLane : reach[(Math.random() * reach.length) | 0];
+  const movedLane = nextSafe !== safeLane;
+
+  // 2) decide what the safe lane holds. It must stay clearable:
+  //    - while changing lanes, keep it OPEN (don't force a jump/slide mid-shift)
+  //    - only force an action if the previous safe lane was open, so a prior
+  //      slide/jump has time to finish (no slide->jump trap, no double actions)
+  let safeKind = 'open';
+  if (!warmup && !movedLane && prevSafeKind === 'open' && Math.random() < 0.25 + diff * 0.45) {
+    safeKind = Math.random() < 0.5 ? 'low' : 'high';
+  }
+  if (safeKind !== 'open') items.push(addObstacle(safeKind, LANE_X[nextSafe], z));
+  else if (Math.random() < 0.35) items.push(addCoin(LANE_X[nextSafe], z));
+
+  // 3) fill the other two lanes freely — they need not be solvable
+  let otherObs = 0;
+  if (!warmup) {
+    const r = Math.random();
+    if (r < 0.45 + diff * 0.25) otherObs = 1;
+    if (r < 0.12 + diff * 0.30) otherObs = 2;
+  }
+  const others = [0, 1, 2].filter(l => l !== nextSafe).sort(() => Math.random() - 0.5);
+  for (let i = 0; i < others.length; i++) {
+    if (i < otherObs) {
+      items.push(addObstacle(kinds[(Math.random() * 3) | 0], LANE_X[others[i]], z));
+    } else if (Math.random() < 0.55) {
+      items.push(addCoin(LANE_X[others[i]], z));
+    }
+  }
+
+  safeLane = nextSafe;
+  prevSafeKind = safeKind;
+  rows.push({ z, items });
+}
+
+function clearTrack() {
+  for (const row of rows) {
+    for (const it of row.items) {
+      if (it.type === 'obstacle') { obstacleHandles.delete(it.col.handle); world.removeRigidBody(it.body); }
+      freeMesh(it.kind, it.mesh);
+    }
+  }
+  rows = [];
+  nextSpawnZ = -30;
+}
+
+// ----------------------------------------------------------------------------
+// Audio (tiny WebAudio blips)
+// ----------------------------------------------------------------------------
+let actx;
+function beep(freq, dur = 0.08, type = 'square', vol = 0.06) {
+  if (!actx) return;
+  const o = actx.createOscillator(), g = actx.createGain();
+  o.type = type; o.frequency.value = freq;
+  g.gain.value = vol; o.connect(g); g.connect(actx.destination);
+  o.start(); g.gain.exponentialRampToValueAtTime(0.0001, actx.currentTime + dur);
+  o.stop(actx.currentTime + dur);
+}
+
+// ----------------------------------------------------------------------------
+// Game state
+// ----------------------------------------------------------------------------
+let state = 'menu';     // 'menu' | 'play' | 'over'
+let speed = START_SPEED;
+let pPos = { x: 0, y: STAND_Y, z: 0 };
+let vy = 0;
+let grounded = true;
+let targetLane = 1;
+let sliding = false, slideTimer = 0;
+let distance = 0, coins = 0, score = 0;
+let runTime = 0;
+let best = Number(localStorage.getItem('dashrunner_best') || 0);
+
+const hudScore = document.querySelector('#score .value');
+const hudCoins = document.querySelector('#coins .value');
+const hudSpeed = document.querySelector('#speed .value');
+
+function resetGame() {
+  clearTrack();
+  speed = START_SPEED;
+  pPos = { x: 0, y: STAND_Y, z: 0 };
+  vy = 0; grounded = true; targetLane = 1;
+  sliding = false; slideTimer = 0;
+  distance = 0; coins = 0; score = 0; runTime = 0;
+  safeLane = 1; prevSafeKind = 'open'; rowIndex = 0; // restart the safe corridor at player's lane
+  if (playerCol && sliding) setSlideCollider(false);
+  playerBody.setNextKinematicTranslation({ x: 0, y: STAND_Y, z: 0 });
+  world.step();
+  // pre-fill track
+  nextSpawnZ = -30;
+  while (nextSpawnZ > pPos.z - SPAWN_AHEAD) { spawnRow(nextSpawnZ); nextSpawnZ -= ROW_GAP; }
+}
+
+function startGame() {
+  if (!actx) { try { actx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {} }
+  resetGame();
+  state = 'play';
+  document.getElementById('startScreen').classList.add('hidden');
+  document.getElementById('overScreen').classList.add('hidden');
+}
+
+function gameOver() {
+  state = 'over';
+  beep(140, 0.5, 'sawtooth', 0.12);
+  flash();
+  best = Math.max(best, Math.floor(score));
+  localStorage.setItem('dashrunner_best', best);
+  document.getElementById('finalScore').textContent = Math.floor(score);
+  document.getElementById('bestScore').textContent = 'Best ' + best;
+  document.getElementById('overScreen').classList.remove('hidden');
+}
+
+function flash() {
+  const f = document.getElementById('flash');
+  f.style.opacity = '0.7';
+  setTimeout(() => { f.style.opacity = '0'; }, 90);
+}
+
+// ----------------------------------------------------------------------------
+// Input
+// ----------------------------------------------------------------------------
+function moveLane(dir) {
+  targetLane = Math.max(0, Math.min(2, targetLane + dir));
+  beep(520, 0.05, 'triangle', 0.04);
+}
+function jump() {
+  if (grounded && !sliding) { vy = JUMP_V; grounded = false; beep(660, 0.12, 'square', 0.06); }
+}
+function startSlide() {
+  if (!sliding && grounded) {
+    sliding = true; slideTimer = SLIDE_TIME; setSlideCollider(true);
+    beep(300, 0.12, 'sawtooth', 0.05);
+  }
+}
+
+addEventListener('keydown', (e) => {
+  if (state !== 'play') {
+    if (e.code === 'Space' || e.code === 'Enter') {
+      if (state === 'menu') startGame(); else if (state === 'over') startGame();
+    }
+    return;
+  }
+  switch (e.code) {
+    case 'ArrowLeft': case 'KeyA': moveLane(-1); break;
+    case 'ArrowRight': case 'KeyD': moveLane(1); break;
+    case 'ArrowUp': case 'KeyW': case 'Space': jump(); break;
+    case 'ArrowDown': case 'KeyS': startSlide(); break;
+  }
+});
+
+// touch swipe
+let touchStart = null;
+addEventListener('touchstart', (e) => { touchStart = { x: e.touches[0].clientX, y: e.touches[0].clientY }; }, { passive: true });
+addEventListener('touchend', (e) => {
+  if (!touchStart || state !== 'play') { touchStart = null; return; }
+  const t = e.changedTouches[0];
+  const dx = t.clientX - touchStart.x, dy = t.clientY - touchStart.y;
+  if (Math.abs(dx) < 24 && Math.abs(dy) < 24) { jump(); }
+  else if (Math.abs(dx) > Math.abs(dy)) { moveLane(dx > 0 ? 1 : -1); }
+  else { dy < 0 ? jump() : startSlide(); }
+  touchStart = null;
+}, { passive: true });
+
+document.getElementById('startBtn').onclick = startGame;
+document.getElementById('retryBtn').onclick = startGame;
+
+// ----------------------------------------------------------------------------
+// Main loop
+// ----------------------------------------------------------------------------
+const clock = new THREE.Clock();
+let runCycle = 0;
+
+function update(dt) {
+  runTime += dt;
+  speed = Math.min(MAX_SPEED, START_SPEED + runTime * SPEED_RAMP);
+
+  // --- slide timer ---
+  if (sliding) {
+    slideTimer -= dt;
+    if (slideTimer <= 0) { sliding = false; setSlideCollider(false); }
+  }
+
+  // --- desired movement ---
+  const targetX = LANE_X[targetLane];
+  const dx = (targetX - pPos.x) * Math.min(1, dt * LANE_LERP);
+
+  // vertical
+  if (sliding) {
+    vy = 0;
+    // ease toward slide height
+    const newY = SLIDE_Y;
+    var dy = newY - pPos.y;
+    grounded = true;
+  } else {
+    vy += GRAVITY * dt;
+    var dy = vy * dt;
+    if (pPos.y + dy <= STAND_Y && vy <= 0) { dy = STAND_Y - pPos.y; vy = 0; grounded = true; }
+    else { grounded = pPos.y + dy <= STAND_Y + 0.001; }
+  }
+
+  const dz = -speed * dt;
+  const desired = { x: dx, y: dy, z: dz };
+
+  // --- Rapier: collision-aware movement ---
+  controller.computeColliderMovement(playerCol, desired);
+  const mv = controller.computedMovement();
+
+  // death detection via Rapier's character-controller collisions
+  let dead = false;
+  const nc = controller.numComputedCollisions();
+  for (let i = 0; i < nc; i++) {
+    const c = controller.computedCollision(i);
+    if (c && c.collider && obstacleHandles.has(c.collider.handle)) { dead = true; break; }
+  }
+  // fallback: forward motion got blocked while running
+  if (!dead && dz < -0.001 && mv.z > dz * 0.5) dead = true;
+
+  pPos.x += mv.x; pPos.y += mv.y; pPos.z += mv.z;
+  playerBody.setNextKinematicTranslation(pPos);
+  world.step();
+
+  distance += -mv.z;
+  score = distance + coins * 10;
+
+  // --- coins (distance based pickup) ---
+  for (const row of rows) {
+    for (const it of row.items) {
+      if (it.type === 'coin' && !it.collected) {
+        const ddx = it.laneX - pPos.x, ddy = it.y - pPos.y, ddz = it.z - pPos.z;
+        if (ddx * ddx + ddy * ddy + ddz * ddz < COIN_RADIUS * COIN_RADIUS) {
+          it.collected = true; it.mesh.visible = false;
+          coins++; beep(880 + Math.min(coins, 30) * 6, 0.07, 'square', 0.05);
+        } else {
+          it.mesh.rotation.z += dt * 4; // spin
+        }
+      }
+    }
+  }
+
+  if (dead) { gameOver(); return; }
+
+  // --- recycle rows & spawn ahead ---
+  for (let i = rows.length - 1; i >= 0; i--) {
+    if (rows[i].z > pPos.z + DESPAWN_BEHIND) {
+      for (const it of rows[i].items) {
+        if (it.type === 'obstacle') { obstacleHandles.delete(it.col.handle); world.removeRigidBody(it.body); }
+        freeMesh(it.kind, it.mesh);
+      }
+      rows.splice(i, 1);
+    }
+  }
+  while (nextSpawnZ > pPos.z - SPAWN_AHEAD) { spawnRow(nextSpawnZ); nextSpawnZ -= ROW_GAP; }
+
+  // --- HUD ---
+  hudScore.textContent = Math.floor(score);
+  hudCoins.textContent = coins;
+  hudSpeed.textContent = Math.round(speed * 3.6); // "km/h" flavour
+}
+
+function syncVisuals(dt) {
+  // player mesh follows physics position
+  player.position.set(pPos.x, pPos.y - STAND_Y, pPos.z);
+  player.rotation.y = (LANE_X[targetLane] - pPos.x) * 0.25; // lean into turns
+
+  // run / slide pose
+  if (sliding) {
+    player.scale.set(1, 0.55, 1.4);
+    torso.rotation.x = -1.1;
+  } else {
+    player.scale.set(1, 1, 1);
+    torso.rotation.x = 0;
+    runCycle += dt * speed * 0.9;
+    const sw = Math.sin(runCycle) * (grounded ? 0.9 : 0.3);
+    legL.rotation.x = sw; legR.rotation.x = -sw;
+    armL.rotation.x = -sw; armR.rotation.x = sw;
+  }
+
+  // blob shadow under feet
+  blob.position.set(pPos.x, 0.02, pPos.z);
+  const air = Math.max(0, pPos.y - STAND_Y);
+  blob.scale.setScalar(1 - Math.min(0.6, air * 0.25));
+  blob.material.opacity = 0.35 * (1 - Math.min(0.7, air * 0.3));
+
+  // camera follow
+  const camTarget = new THREE.Vector3(pPos.x * 0.45, 4.4, pPos.z + 9);
+  camera.position.lerp(camTarget, Math.min(1, dt * 6));
+  camera.lookAt(pPos.x * 0.25, 1.2, pPos.z - 7);
+
+  // floor + rails follow, texture scrolls
+  floor.position.z = pPos.z - 180;
+  railL.position.z = railR.position.z = pPos.z - 180;
+  floorTex.offset.y = (pPos.z * 0.5) % 1; // scroll texture to fake motion
+
+  // recycle buildings that fall behind
+  for (const b of buildings) {
+    if (b.position.z > pPos.z + 30) {
+      const h = 6 + Math.random() * 22;
+      b.position.z -= 18 * 12;
+      b.position.x = b.userData.side * (8 + Math.random() * 9);
+      b.scale.y = h / b.geometry.parameters.height;
+      b.position.y = h / 2;
+    }
+  }
+
+  // sun follows so shadows stay in view
+  sun.position.set(pPos.x - 8, 18, pPos.z + 6);
+  sun.target.position.set(pPos.x, 0, pPos.z - 6);
+}
+
+renderer.setAnimationLoop(() => {
+  const dt = Math.min(clock.getDelta(), 0.05);
+  if (state === 'play') update(dt);
+  // keep idle character animating gently on menus
+  if (state !== 'play') {
+    runCycle += dt * 4;
+    const sw = Math.sin(runCycle) * 0.2;
+    legL.rotation.x = sw; legR.rotation.x = -sw;
+    armL.rotation.x = -sw; armR.rotation.x = sw;
+  }
+  syncVisuals(dt);
+  renderer.render(scene, camera);
+});
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+// build initial track so the menu has scenery
+resetGame();
+state = 'menu';
+</script>
+</body>
+</html>
