@@ -268,7 +268,6 @@ function setSlideCollider(sliding) {
 const GEO = {
   low:   new THREE.BoxGeometry(2.0, 0.5, 0.6),
   high:  new THREE.BoxGeometry(2.2, 1.4, 0.5),
-  train: new THREE.BoxGeometry(2.0, 2.4, 4.2),
   coin:  new THREE.CylinderGeometry(0.36, 0.36, 0.1, 18),
   post:  new THREE.BoxGeometry(0.12, 1.0, 0.12),
 };
@@ -278,11 +277,78 @@ const MAT = {
   train: new THREE.MeshStandardMaterial({ color: 0x4f6bff, roughness: 0.4, metalness: 0.3, emissive: 0x101b6b, emissiveIntensity: 0.4 }),
   coin:  new THREE.MeshStandardMaterial({ color: 0xffd34d, metalness: 0.9, roughness: 0.25, emissive: 0x6a5300, emissiveIntensity: 0.5 }),
   post:  new THREE.MeshStandardMaterial({ color: 0xdddddd, roughness: 0.6 }),
+  // subway-car detailing
+  trainRoof:   new THREE.MeshStandardMaterial({ color: 0x2a3470, roughness: 0.7, metalness: 0.4 }),
+  trainWindow: new THREE.MeshStandardMaterial({ color: 0x0a1230, roughness: 0.2, metalness: 0.3, emissive: 0x6ad3ff, emissiveIntensity: 0.6 }),
+  trainTrim:   new THREE.MeshStandardMaterial({ color: 0xffd34d, roughness: 0.5, emissive: 0x5a4400, emissiveIntensity: 0.3 }),
+  headlight:   new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xfff3c0, emissiveIntensity: 1.2 }),
 };
 
-// Object pools so we don't churn allocations
-const meshPool = { low: [], high: [], train: [], coin: [] };
-function getMesh(kind) {
+// Subway cars come in a few lengths for variety (short / medium / long).
+const TRAIN_LENGTHS = [4.2, 6.0, 7.8];
+
+// Build a styled subway car of the given length. Body centred on origin in x/z;
+// group is raised to y=1.2 so it spans y 0..2.4 (matches the train collider).
+function buildTrain(length) {
+  const g = new THREE.Group();
+  const W = 1.9, H = 2.4, hW = W / 2, hH = H / 2, hL = length / 2;
+
+  const body = new THREE.Mesh(new THREE.BoxGeometry(W, H, length), MAT.train);
+  body.castShadow = true; g.add(body);
+
+  // roof (inset, darker) with a pair of vents/AC units
+  const roof = new THREE.Mesh(new THREE.BoxGeometry(W * 0.82, 0.18, length * 0.94), MAT.trainRoof);
+  roof.position.y = hH + 0.02; g.add(roof);
+  for (const s of [-1, 1]) {
+    const vent = new THREE.Mesh(new THREE.BoxGeometry(W * 0.5, 0.12, 0.5), MAT.trainRoof);
+    vent.position.set(0, hH + 0.16, s * length * 0.28); g.add(vent);
+  }
+
+  // dark undercarriage skirt
+  const skirt = new THREE.Mesh(new THREE.BoxGeometry(W * 0.96, 0.4, length * 0.98), MAT.trainRoof);
+  skirt.position.y = -hH + 0.18; g.add(skirt);
+
+  // yellow waistline stripe down both sides
+  for (const s of [-1, 1]) {
+    const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.12, length * 0.96), MAT.trainTrim);
+    stripe.position.set(s * (hW + 0.01), -0.15, 0); g.add(stripe);
+  }
+
+  // evenly spaced lit windows along both sides
+  const winW = 0.55, winH = 0.62, pitch = winW + 0.34;
+  const n = Math.max(2, Math.floor((length - 1.4) / pitch));
+  const span = (n - 1) * pitch;
+  for (let i = 0; i < n; i++) {
+    const z = -span / 2 + i * pitch;
+    for (const s of [-1, 1]) {
+      const win = new THREE.Mesh(new THREE.BoxGeometry(0.05, winH, winW), MAT.trainWindow);
+      win.position.set(s * (hW + 0.005), 0.45, z); g.add(win);
+    }
+  }
+
+  // cab on the +z end (the face the player approaches): windshield, sign, headlights
+  const wind = new THREE.Mesh(new THREE.BoxGeometry(W * 0.66, 0.6, 0.06), MAT.trainWindow);
+  wind.position.set(0, 0.55, hL + 0.005); g.add(wind);
+  const sign = new THREE.Mesh(new THREE.BoxGeometry(W * 0.4, 0.18, 0.05), MAT.trainTrim);
+  sign.position.set(0, hH - 0.2, hL + 0.01); g.add(sign);
+  for (const s of [-1, 1]) {
+    const head = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.2, 0.06), MAT.headlight);
+    head.position.set(s * hW * 0.55, -0.5, hL + 0.01); g.add(head);
+  }
+
+  g.position.y = 1.2;
+  return g;
+}
+
+// Object pools so we don't churn allocations (trains pooled per length variant).
+const meshPool = { low: [], high: [], coin: [], train: TRAIN_LENGTHS.map(() => []) };
+function getMesh(kind, variant = 0) {
+  if (kind === 'train') {
+    let m = meshPool.train[variant].pop();
+    if (!m) { m = buildTrain(TRAIN_LENGTHS[variant]); m.userData.variant = variant; }
+    m.visible = true;
+    return m;
+  }
   let m = meshPool[kind].pop();
   if (!m) {
     if (kind === 'high') {
@@ -296,13 +362,16 @@ function getMesh(kind) {
       m = new THREE.Mesh(GEO[kind], MAT[kind]);
       m.castShadow = true;
       if (kind === 'low') m.position.y = 0.25;
-      if (kind === 'train') m.position.y = 1.2;
     }
   }
   m.visible = true;
   return m;
 }
-function freeMesh(kind, m) { m.visible = false; scene.remove(m); meshPool[kind].push(m); }
+function freeMesh(kind, m) {
+  m.visible = false; scene.remove(m);
+  if (kind === 'train') meshPool.train[m.userData.variant].push(m);
+  else meshPool[kind].push(m);
+}
 
 // ----------------------------------------------------------------------------
 // Track generation (row based, endless)
@@ -315,7 +384,9 @@ let nextSpawnZ = -30;   // world z of next row to create
 //  high  : y 1.0 .. 2.4   (slide under)
 //  train : y 0.0 .. 2.4   (change lane)
 function addObstacle(kind, laneX, z) {
-  const mesh = getMesh(kind);
+  let variant = 0, halfLen = 0;
+  if (kind === 'train') { variant = (Math.random() * TRAIN_LENGTHS.length) | 0; halfLen = TRAIN_LENGTHS[variant] / 2; }
+  const mesh = getMesh(kind, variant);
   mesh.position.set(laneX, mesh.position.y || 0, z);
   scene.add(mesh);
 
@@ -325,7 +396,7 @@ function addObstacle(kind, laneX, z) {
   if (kind === 'train') { hy = 1.20; cy = 1.20; }
 
   const desc = kind === 'train'
-    ? RAPIER.ColliderDesc.cuboid(0.95, 1.2, 2.1)
+    ? RAPIER.ColliderDesc.cuboid(0.95, 1.2, halfLen)
     : RAPIER.ColliderDesc.cuboid(1.0, hy, 0.28);
   const body = world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(laneX, cy, z));
   const col = world.createCollider(desc, body);
