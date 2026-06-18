@@ -354,9 +354,9 @@ function getMesh(kind, variant = 0) {
     if (kind === 'high') {
       // gate: bar on two posts
       m = new THREE.Group();
-      const bar = new THREE.Mesh(GEO.high, MAT.high); bar.position.y = 1.7; bar.castShadow = true;
-      const p1 = new THREE.Mesh(GEO.post, MAT.post); p1.position.set(-1.05, 1.2, 0);
-      const p2 = new THREE.Mesh(GEO.post, MAT.post); p2.position.set(1.05, 1.2, 0);
+      const bar = new THREE.Mesh(GEO.high, MAT.high); bar.position.y = 2.1; bar.castShadow = true;
+      const p1 = new THREE.Mesh(GEO.post, MAT.post); p1.position.set(-1.05, 1.05, 0); p1.scale.y = 2.1;
+      const p2 = new THREE.Mesh(GEO.post, MAT.post); p2.position.set(1.05, 1.05, 0); p2.scale.y = 2.1;
       m.add(bar, p1, p2);
     } else {
       m = new THREE.Mesh(GEO[kind], MAT[kind]);
@@ -381,7 +381,7 @@ let nextSpawnZ = -30;   // world z of next row to create
 
 // obstacle vertical spans (for collider) — must match visuals/gameplay
 //  low   : y 0.0 .. 0.7   (jump over)
-//  high  : y 1.0 .. 2.4   (slide under)
+//  high  : y 1.4 .. 2.8   (slide under)
 //  train : y 0.0 .. 2.4   (change lane)
 function addObstacle(kind, laneX, z) {
   let variant = 0, halfLen = 0;
@@ -392,7 +392,7 @@ function addObstacle(kind, laneX, z) {
 
   let hy, cy; // collider half-height (capsule) and centre
   if (kind === 'low')   { hy = 0.25; cy = 0.25; }
-  if (kind === 'high')  { hy = 0.70; cy = 1.70; }
+  if (kind === 'high')  { hy = 0.70; cy = 2.10; }
   if (kind === 'train') { hy = 1.20; cy = 1.20; }
 
   const desc = kind === 'train'
